@@ -2,6 +2,19 @@ import unittest
 
 
 class SenseVoiceRuntimeTests(unittest.TestCase):
+    def test_failed_warmup_is_reported_as_not_ready(self) -> None:
+        import sensevoice_stt
+
+        with self.assertRaisesRegex(RuntimeError, "model unavailable"):
+            sensevoice_stt.warmup_sensevoice(
+                env={"PAWPILOT_SENSEVOICE_MODEL": "demo"},
+                model_getter=lambda *_args: (_ for _ in ()).throw(RuntimeError("model unavailable")),
+            )
+        status = sensevoice_stt.sensevoice_runtime_status()
+        self.assertEqual(status["state"], "error")
+        self.assertFalse(status["ready"])
+        self.assertIn("model unavailable", status["error"])
+
     def test_warmup_loads_configured_model_before_first_recording(self) -> None:
         try:
             from sensevoice_stt import warmup_sensevoice

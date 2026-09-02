@@ -7,6 +7,18 @@ from functools import lru_cache
 
 
 _inference_lock = threading.Lock()
+_runtime_lock = threading.Lock()
+_runtime = {"state": "not_loaded", "ready": False, "error": None, "model": None, "device": None}
+
+
+def sensevoice_runtime_status() -> dict:
+    with _runtime_lock:
+        return dict(_runtime)
+
+
+def _set_runtime(**changes) -> None:
+    with _runtime_lock:
+        _runtime.update(changes)
 
 
 def _resolve_device(configured_device: str) -> str:
@@ -60,7 +72,13 @@ def warmup_sensevoice(env: dict[str, str] | None = None, model_getter=None) -> d
     hub = source.get("PAWPILOT_SENSEVOICE_HUB", "ms").strip() or "ms"
     device = _resolve_device(source.get("PAWPILOT_SENSEVOICE_DEVICE", "auto").strip())
     getter = _get_model if model_getter is None else model_getter
-    getter(model_name, device, hub)
+    _set_runtime(state="loading", ready=False, error=None, model=model_name, device=device)
+    try:
+        getter(model_name, device, hub)
+    except Exception as error:
+        _set_runtime(state="error", ready=False, error=str(error)[:300])
+        raise
+    _set_runtime(state="ready", ready=True, error=None)
     return {"ready": True, "model": model_name, "device": device}
 
 
@@ -85,7 +103,12 @@ def transcribe_sensevoice(
         postprocessor = rich_transcription_postprocess
 
     waveform = decoder(audio, content_type)
-    model = model_getter(model_name, device, hub)
+    try:
+        model = model_getter(model_name, device, hub)
+        _set_runtime(state="ready", ready=True, error=None, model=model_name, device=device)
+    except Exception as error:
+        _set_runtime(state="error", ready=False, error=str(error)[:300], model=model_name, device=device)
+        raise
     with _inference_lock:
         result = model.generate(
             input=waveform,

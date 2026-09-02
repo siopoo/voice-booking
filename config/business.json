@@ -1,0 +1,41 @@
+{
+  "business_name": "PawPilot 宠物护理中心",
+  "business_type": "pet_groomer",
+  "address": "上海市静安区示范路88号",
+  "timezone": "Asia/Shanghai",
+  "opening_time": "10:00",
+  "closing_time": "18:00",
+  "closed_weekdays": [
+    0
+  ],
+  "booking_window_days": 14,
+  "services": [
+    {
+      "id": "basic",
+      "name": "基础洗护",
+      "duration": 60,
+      "price": 88
+    },
+    {
+      "id": "grooming",
+      "name": "精致美容",
+      "duration": 90,
+      "price": 168
+    },
+    {
+      "id": "spa",
+      "name": "深度护理",
+      "duration": 90,
+      "price": 238
+    }
+  ],
+  "appointment_slots": [
+    "10:00",
+    "11:30",
+    "14:00",
+    "15:30",
+    "17:00"
+  ],
+  "agent_language": "zh",
+  "welcome_message": "您好，我是 PawPilot AI 前台。请问想为您的宠物预约什么服务？"
+}

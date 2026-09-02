@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PawPilot · AI 语音预约演示</title>
+  <title>PawPilot AI语音预约系统</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#"><span class="brand-dot"></span>PawPilot</a>
-    <div class="status"><span class="status-dot"></span><span id="agent-mode">AI 前台在线</span></div>
+    <a class="brand" href="/"><span class="brand-dot"></span>PawPilot AI语音预约系统</a>
+    <div><a class="nav-link" href="/delivery.html">客户开通与交付</a>　<span class="status"><span class="status-dot"></span><span id="agent-mode">AI 前台在线</span></span></div>
   </header>
 
   <main>
@@ -21,7 +21,7 @@
       </div>
       <div class="business-card">
         <span>今日接待门店</span>
-        <strong id="business-name">PawPilot 宠物护理中心</strong>
+        <strong id="business-name">正在读取门店配置…</strong>
         <p id="business-hours">正在读取营业信息…</p>
       </div>
     </section>
@@ -92,6 +92,7 @@
         <button id="refresh-bookings" class="text-button">刷新</button>
       </div>
       <div id="bookings" class="booking-grid"></div>
+      <p class="boundary-note">运营视图默认隐藏手机号。当前 Demo 不包含真实电话接入、短信发送或支付能力。</p>
     </section>
   </main>
 

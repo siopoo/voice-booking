@@ -14,6 +14,7 @@ const state = {
   apiFallbackNotified: false,
   sessionId: "",
   activeMicLabel: "",
+  idempotencyKey: "",
 };
 
 const elements = {
@@ -176,6 +177,8 @@ function normalize(text) {
 }
 
 function parseService(text) {
+  const exact = state.config.services.find((service) => text.includes(service.name));
+  if (exact) return exact;
   if (/基础|洗护|洗澡/.test(text)) return state.config.services.find((s) => s.id === "basic");
   if (/美容|造型|修剪/.test(text)) return state.config.services.find((s) => s.id === "grooming");
   if (/护理|SPA|spa|药浴/.test(text)) return state.config.services.find((s) => s.id === "spa");
@@ -286,7 +289,7 @@ async function handleUserText(rawText) {
       return;
     }
     state.busy = true;
-    const response = await fetch(`/api/slots?date=${encodeURIComponent(day)}`);
+    const response = await fetch(`/api/slots?date=${encodeURIComponent(day)}&service_id=${encodeURIComponent(state.draft.service.id)}`);
     const data = await response.json();
     state.busy = false;
     if (!data.slots.length) {
@@ -473,7 +476,7 @@ async function submitBooking() {
   };
   const response = await fetch("/api/bookings", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": state.idempotencyKey },
     body: JSON.stringify(payload),
   });
   const data = await response.json();
@@ -489,7 +492,7 @@ async function submitBooking() {
   state.step = "done";
   elements.result.classList.remove("hidden");
   elements.result.innerHTML = `<strong>预约成功</strong><br>预约编号：${escapeHtml(data.booking_code)}`;
-  reply(`预约成功！您的预约编号是${data.booking_code}。到店前我们会通过手机发送提醒，期待见到${state.draft.pet_name}。`, ["重新开始"]);
+  reply(`预约成功！您的预约编号是${data.booking_code}。该记录已经写入本机预约数据库，期待见到${state.draft.pet_name}。`, ["重新开始"]);
   await loadBookings();
 }
 
@@ -513,6 +516,7 @@ function dateReplies() {
 
 function resetConversation() {
   state.sessionId = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
+  state.idempotencyKey = window.crypto?.randomUUID?.() || `booking-${Date.now()}-${Math.random()}`;
   state.step = "service";
   state.draft = {};
   state.availableSlots = [];
@@ -526,11 +530,11 @@ function resetConversation() {
   updateSummary();
   if (state.agentConfigured) {
     reply(
-      "您好，我是 PawPilot AI 前台。现在由大模型 Agent 为您服务，我会通过门店工具查询真实信息并完成预约。请问有什么可以帮您？",
+      `${state.config.welcomeMessage} 现在由大模型 Agent 为您服务，门店事实与预约结果均通过业务工具核验。`,
       ["有哪些服务？", "我想预约宠物美容", "明天有空吗？"],
     );
   } else {
-    reply("您好，我是 PawPilot AI 前台。我们提供基础洗护、精致美容和深度护理。请问想为宝贝预约哪项服务？", serviceReplies());
+    reply(state.config.welcomeMessage || `您好，我是${state.config.business.name}的 AI 前台。请问想为宝贝预约哪项服务？`, serviceReplies());
   }
 }
 
@@ -548,6 +552,7 @@ async function loadBookings() {
       <strong>${escapeHtml(booking.pet_name)} · ${escapeHtml(booking.service_name)}</strong>
       <p>${escapeHtml(formatDate(booking.appointment_date))} ${escapeHtml(booking.appointment_time)}</p>
       <p>${escapeHtml(booking.customer_name)} · ${escapeHtml(booking.phone)}</p>
+      <span class="booking-status ${escapeHtml(booking.status)}">${booking.status === "cancelled" ? "已取消" : "已确认"}</span>
     </article>
   `).join("");
 }
@@ -599,7 +604,7 @@ async function start() {
   const agentStatus = await agentResponse.json();
   const sttStatus = await sttResponse.json();
   state.agentConfigured = agentStatus.configured;
-  state.sttConfigured = Boolean(sttStatus.configured && backendVoiceRecorder);
+  state.sttConfigured = Boolean((sttStatus.ready ?? sttStatus.configured) && backendVoiceRecorder);
   if (state.sttConfigured) await refreshMicrophones();
   document.querySelector("#agent-mode").textContent = agentStatus.configured
     ? `真实 Agent · ${agentStatus.model}`
@@ -609,6 +614,8 @@ async function start() {
   if (state.sttConfigured) {
     elements.mic.disabled = false;
     elements.voiceHint.textContent = `后端语音识别已就绪 · ${sttStatus.model}`;
+  } else if (sttStatus.configured && !sttStatus.ready && voiceSession) {
+    elements.voiceHint.textContent = `后端语音识别${sttStatus.state === "loading" ? "加载中" : "不可用"}，已回退浏览器语音识别`;
   } else if (!voiceSession) {
     elements.mic.disabled = true;
     elements.voiceTitle.textContent = "语音输入尚未配置";

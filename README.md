@@ -1,216 +1,165 @@
-# PawPilot LangChain 语音预约 Agent
+# PawPilot AI语音预约系统
 
-本项目的重点是后端大模型 Agent，不是网页。网页只负责把语音转成文字、播放回复以及展示工具调用轨迹。
+用于 AI 开发工程师考核的可运行 Demo，参考 CallPilot 类型产品的业务路径。项目展示两条闭环：客户从申请、审核、配置到 Demo 激活；访客从语音/文字咨询到预约创建、查询、改期和取消。
 
-## 核心架构
+> 当前是本地单门店演示系统。没有实现真实电话号码、短信发送、支付或医疗建议，“Demo 已激活”不等于电话渠道已开通。
+
+## 核心设计
 
 ```text
-客户语音
-  → 浏览器 STT
-  → POST /api/chat
-  → LangChain create_agent（会话记忆 + 决策）
-       ├─ get_business_profile：门店事实
-       ├─ get_services：服务、价格、时长
-       ├─ update_booking_draft：结构化记录已确认字段
-       ├─ check_availability：读取真实空闲时段
-       ├─ create_booking：确认后写入预约
-       ├─ find_bookings：按编号或手机号核对预约
-       ├─ reschedule_booking：确认后改期
-       └─ cancel_booking：确认后取消并释放时段
-  → LangGraph 确定性流程评估（收集中 / 等待确认 / 已创建 / 已取消）
-  → SQLite 唯一约束防止重复预约
-  → Agent 自然语言回复
-  → 浏览器 TTS
+浏览器麦克风/文字
+  ├─ SenseVoice（可选）→ 失败回退浏览器 SpeechRecognition/文字
+  └─ 文本
+       ↓
+LangChain Agent（理解、决策、自然回复）
+       ↓ LangGraph 预约阶段 + 8 个业务工具
+配置事实 ─→ 统一预约校验 ─→ SQLite
+       ↑        手机/时区/日期/时长/并发/幂等
+前端草稿、工具轨迹、耗时、预约状态
 ```
 
-大模型负责理解表达、维护上下文和决定何时调用工具，但不能编造价格、时段或绕过数据库。业务工具及 SQLite 才是事实来源。
+大模型不能直接决定价格、可用时段或数据库结果。门店事实来自 `config/business.json`，所有写入最终经过后端规则和数据库约束。模型未配置时，本地可靠流程仍能完成基础预约。
 
-## 业务闭环
+## 客户开通与交付
 
-1. Agent 调用 `get_services` 回答服务与价格；
-2. 采集服务、宠物、日期、联系人等信息；
-3. 调用 `check_availability`，只提供数据库返回的时段；
-4. 信息齐全后向客户完整复述；
-5. 客户明确确认后才调用 `create_booking`；
-6. 工具再次校验时段并写入 SQLite；
-7. 如果发生并发冲突，Agent 重新查时段并继续对话；
-8. `/api/chat` 返回回复和工具调用轨迹，便于演示与审计。
+`客户申请与三项授权 → 公开信息整理 → 人工审核 → 门店配置 → 文字/语音测试 → 客户验收 → Demo激活 → 后续商业电话交付`
 
-结构化预约草稿不依赖 Agent 的自然语言措辞。模型通过
-`update_booking_draft` 提交字段，LangGraph 根据必填字段和数据库执行结果计算流程阶段；
-未知服务无法进入草稿，未经明确确认的创建、改期或取消会被业务工具拒绝。
+- 页面：`http://127.0.0.1:8000/delivery.html`
+- 文档：[客户开通与交付流程](docs/客户开通与交付流程.md)
+- 考核材料：[项目讲解稿](docs/项目讲解稿.md) · [现场演示脚本](docs/现场演示脚本.md) · [常见问题与答案](docs/常见问题与答案.md)
 
-## 环境要求与安装
+申请、采集结果、状态、配置草稿和验收清单保存在 SQLite；激活会更新当前门店配置。外部网站不可达时使用稳定演示数据或人工录入回退。
 
-LangChain 1.x 需要 Python 3.10 或更高版本。当前项目已经创建 Python 3.12 的 `.venv`。
+## AI 预约业务流程
+
+工具：`get_business_profile`、`get_services`、`update_booking_draft`、`check_availability`、`create_booking`、`find_bookings`、`reschedule_booking`、`cancel_booking`。
+
+系统收集服务、宠物名称/类型、日期、时间、联系人和 11 位大陆手机号。信息齐全后完整复述，只有明确确认才创建。后端统一验证 Asia/Shanghai 当地时间、当天至配置窗口、休息日、当天过期时段、允许时段、服务结束不晚于关门、占用冲突。创建与改期共用这些规则；取消后释放时段。
+
+后端也提供可选 REST 接口：`POST /api/bookings`、`POST /api/bookings/query`、`POST /api/bookings/reschedule`、`POST /api/bookings/cancel`，方便不经过页面的系统集成和验收。
+
+`Idempotency-Key` 在一次提交过程中复用，服务器保存不可变响应快照。新会话产生新键，因此取消后可合法重约相同信息。
+
+## 目录
+
+```text
+voice-booking/
+├─ server.py                 # HTTP API、预约规则、SQLite、开通流程
+├─ booking_agent.py          # LangChain Agent 与工具
+├─ booking_workflow.py       # LangGraph 确定性流程状态
+├─ business_config.py        # 配置校验、版本与安全回退
+├─ sensevoice_stt.py         # 本地 STT 与真实运行状态
+├─ config/business.json      # 当前有效门店配置
+├─ static/                   # 预约主页、交付页、原生 JS/CSS
+├─ docs/                     # 业务与考核材料
+├─ test_*.py / *_test.mjs    # Python 与 Node 测试
+└─ .env.example              # API 配置模板
+```
+
+## Windows 安装与启动
+
+请先进入实际克隆目录；新克隆项目**不会预先存在 `.venv`**。
 
 ```powershell
-cd voice_booking_demo
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd voice-booking
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python server.py
 ```
 
-### 配置模型 API
+打开预约主页 `http://127.0.0.1:8000/` 或客户开通页 `http://127.0.0.1:8000/delivery.html`。终端按 `Ctrl+C` 停止。
 
-编辑项目根目录的 `.env` 文件：
+不创建 `.env`、不配置 API Key 也可启动，页面显示“本地可靠模式”，使用文字或浏览器语音完成预约。
+
+## 配置 DeepSeek / OpenAI 兼容模型
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
 
 ```dotenv
-PAWPILOT_LLM_API_KEY=你的 API Key
+PAWPILOT_LLM_API_KEY=替换为真实密钥
 PAWPILOT_LLM_MODEL=deepseek-chat
 PAWPILOT_LLM_BASE_URL=https://api.deepseek.com
 PAWPILOT_LLM_TIMEOUT=45
 PAWPILOT_LLM_MAX_RETRIES=3
 ```
 
-使用其他兼容 OpenAI Chat Completions 的服务时，修改模型名和 Base URL。例如 OpenAI：
+保存后重启。`.env` 已被 Git 忽略；不要把密钥粘贴到代码、截图或提交记录。
 
-```dotenv
-PAWPILOT_LLM_API_KEY=你的 API Key
-PAWPILOT_LLM_MODEL=支持工具调用的模型名称
-PAWPILOT_LLM_BASE_URL=https://api.openai.com/v1
-PAWPILOT_LLM_TIMEOUT=45
-PAWPILOT_LLM_MAX_RETRIES=3
-```
+## 配置语音识别
 
-系统环境变量优先于 `.env` 中的同名设置。模型必须支持 OpenAI Chat Completions 风格的工具调用。可选启用 LangSmith：
+### 本地 SenseVoice
 
-```dotenv
-LANGSMITH_API_KEY=你的 LangSmith Key
-LANGSMITH_TRACING=true
-LANGSMITH_PROJECT=pawpilot-booking-agent
-```
-
-保存 `.env` 后启动或重启服务：
+先按显卡环境安装匹配的 PyTorch/torchaudio，再执行：
 
 ```powershell
-.\.venv\Scripts\python.exe server.py
+pip install -r requirements-sensevoice.txt
 ```
 
-### 可选：后端语音识别
+```dotenv
+PAWPILOT_STT_PROVIDER=sensevoice
+PAWPILOT_SENSEVOICE_MODEL=iic/SenseVoiceSmall
+PAWPILOT_SENSEVOICE_HUB=ms
+PAWPILOT_SENSEVOICE_DEVICE=auto
+PAWPILOT_SENSEVOICE_LANGUAGE=zh
+```
 
-浏览器自带的 Web Speech 服务可能因浏览器或网络环境返回 `network`。如需稳定的语音演示，可在同一个 `.env` 中配置一个兼容 OpenAI `/audio/transcriptions` 的语音转文字服务：
+模型首次下载可能较慢。`GET /api/stt/status` 对 SenseVoice 返回 `loading/ready/error` 的真实状态；失败时页面回退浏览器识别或文字。
+
+### OpenAI 兼容 STT
 
 ```dotenv
-PAWPILOT_STT_API_KEY=你的语音识别 API Key
+PAWPILOT_STT_PROVIDER=api
+PAWPILOT_STT_API_KEY=替换为独立语音密钥
 PAWPILOT_STT_MODEL=whisper-1
 PAWPILOT_STT_BASE_URL=https://api.openai.com/v1
 ```
 
-### 本地 SenseVoice 语音识别（推荐）
+LLM Key 与 STT Key 分离；DeepSeek Chat API 本身不等于语音转文字 API。
 
-项目可直接在后端运行 SenseVoiceSmall。浏览器只负责录音，音频发送到
-`POST /api/transcribe` 后由本机模型转成文字，因此不依赖浏览器内置的语音识别服务。
+## 门店配置
 
-Windows + NVIDIA GPU 安装：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-.\.venv\Scripts\python.exe -m pip install -r requirements-sensevoice.txt
-```
-
-在 `.env` 中配置：
-
-```dotenv
-PAWPILOT_STT_PROVIDER=sensevoice
-PAWPILOT_SENSEVOICE_MODEL=FunAudioLLM/SenseVoiceSmall
-PAWPILOT_SENSEVOICE_HUB=hf
-PAWPILOT_SENSEVOICE_DEVICE=cuda:0
-PAWPILOT_SENSEVOICE_LANGUAGE=zh
-```
-
-服务启动后会在后台预热 SenseVoice；首次运行仍需下载模型，但网页可以先打开，
-模型完成加载后首句语音无需再等待冷启动。没有 NVIDIA GPU 时，把
-`PAWPILOT_SENSEVOICE_DEVICE` 改为 `cpu`。
-
-配置后，网页使用 `MediaRecorder` 录音并发送到本项目的 `/api/transcribe`，后端转写完成后再把文字交给 LangChain Agent。DeepSeek 的对话 Key 与 STT Key 相互独立；未配置 STT 时仍可使用浏览器语音识别或文字输入。
-
-访问 <http://127.0.0.1:8000>。顶部显示“真实 Agent · 模型名”时，页面对话会全部进入 LangChain Agent；未配置模型时显示“本地可靠模式”，仅作为无网络兜底。
-
-## API
-
-### Agent 对话
-
-```http
-POST /api/chat
-Content-Type: application/json
-
-{
-  "session_id": "demo-call-001",
-  "message": "我想给可乐预约明天下午的精致美容"
-}
-```
-
-响应会同时返回自然语言回复和工具调用轨迹：
-
-```json
-{
-  "reply": "明天下午还有……",
-  "latency_ms": 846,
-  "draft": {
-    "service_id": "grooming",
-    "pet_name": "可乐",
-    "appointment_date": "2026-09-03"
-  },
-  "flow": {
-    "stage": "collecting",
-    "missing_fields": ["appointment_time", "customer_name", "phone"]
-  },
-  "tool_calls": [
-    {
-      "name": "check_availability",
-      "result": "{\"date\":\"...\",\"slots\":[...]}"
-    }
-  ]
-}
-```
-
-同一个 `session_id` 会通过 LangGraph `InMemorySaver` 保持通话上下文。
-
-其他确定性业务接口：
-
-- `GET /api/agent/status`：模型配置状态，不返回密钥；
-- `GET /api/slots?date=YYYY-MM-DD`：查询真实时段；
-- `POST /api/bookings`：直接创建预约，供后台集成使用；
-- `GET /api/bookings`：运营侧预约列表。
-
-`POST /api/bookings` 和 Agent 的 `create_booking` 工具均支持 `idempotency_key`。
-未显式传入时，后端会按预约核心字段生成稳定指纹；相同请求重试会返回原预约，
-不会重复占用时段。
-
-## 语音交互优化
-
-- 页面会显示当前麦克风并允许手动切换输入设备；默认会避开 VoiceMeeter 等虚拟输出设备；
-- 音量条实时显示输入强度，检测到有效说话后静音约 0.9 秒会自动结束录音并提交；
-- 在用户真正开口前保持静音不会误提交；
-- 每轮 Agent 回复展示耗时、工具调用数量、调用顺序及工具结果，方便讲解业务决策过程。
-
-## 推荐考核演示
-
-不要按固定按钮逐步操作，直接用自然语言和 Agent 对话：
-
-1. “你们有哪些服务，精致美容多少钱？”——观察 `get_services`；
-2. “我家狗狗可乐想约明天下午。”——观察 `check_availability`；
-3. 补充联系人和手机号；
-4. Agent 复述后先说“时间改成另一个时段”——展示会话理解；
-5. 最后说“确认预约”——观察 `create_booking` 和数据库记录；
-6. 再开一个会话抢占同一时段——展示冲突校验。
-7. 用预约编号或手机号查询，再要求改期或取消——展示二次确认和时段释放。
-
-这套演示体现的不是模型会聊天，而是它能在业务规则约束下完成真实事务。
-
-## 隐私说明
-
-真实 Agent 模式会把本次对话内容发送给你配置的模型服务商，其中可能包含联系人和手机号。正式上线前应增加隐私告知、脱敏、数据保留策略与合规审查。
+直接编辑 `config/business.json`，或通过交付页审核并激活。配置包含名称、类型、地址、时区、营业时间、休息日、预约窗口、服务、价格、时长、可选时段、语言和欢迎语。读取失败会输出错误并使用安全默认配置；配置版本变化后 Agent 自动重建。
 
 ## 测试
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest -v test_booking_agent.py test_server.py
-& 'C:\Users\Mqx\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' agent_client_test.mjs
-& 'C:\Users\Mqx\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' voice_session_test.mjs
-& 'C:\Users\Mqx\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' transcription_client_test.mjs
-& 'C:\Users\Mqx\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' voice_activity_test.mjs
+python -m unittest -v test_booking_agent.py test_server.py test_sensevoice_stt.py test_business_config.py test_booking_rules.py test_onboarding.py
+node agent_client_test.mjs
+node draft_state_test.mjs
+node transcription_client_test.mjs
+node voice_activity_test.mjs
+node voice_session_test.mjs
 ```
 
-## 电话渠道升级
+覆盖配置、Agent 工具、API、开通状态、授权、手机号、日期窗口、休息日、过期时段、服务越界、并发抢占、幂等快照、取消释放、脱敏和 STT 失败状态。
 
-浏览器 STT/TTS 只是演示渠道。接入真实电话时，用 OpenAI Realtime、Twilio、Vapi 或 LiveKit 替换语音传输层即可，`create_agent`、四个业务工具和数据库逻辑可以保持不变。
+## 完整现场演示
+
+1. 在 `/delivery.html` 提交预填申请，展示三项授权。
+2. 依次资料采集、人工审核，修改服务价格或欢迎语。
+3. 生成配置、进入测试、勾选七项验收、激活 Demo。
+4. 打开 `/`，确认门店和服务同步。
+5. 询价 → 选服务/日期 → 查询真实时段 → 填联系人手机号。
+6. 确认前修改时间，观察草稿与工具轨迹更新，再明确确认。
+7. 查看预约编号、脱敏手机号和状态；演示冲突、查询、改期、取消与释放。
+
+## 常见错误
+
+- **网页空白/旧 UI**：确认在仓库目录运行 `python server.py`，按 `Ctrl+F5`。
+- **端口 8000 占用**：停止旧 `server.py` 进程后重启。
+- **Agent Connection error**：检查 Base URL、模型名、密钥和网络；本地模式不受影响。
+- **SenseVoice不可用**：查看 `/api/stt/status` 和终端错误，核对依赖、模型仓库与设备；先用浏览器语音/文字。
+- **浏览器 network 错误**：浏览器在线识别网络不可达，改用 SenseVoice 或文字。
+- **日期无时段**：可能是休息日、超过窗口、时段已过/占用或服务会超过关门时间。
+
+## 隐私与功能边界
+
+- `.env`、数据库、模型、虚拟环境和日志不提交；运营列表默认手机号脱敏。
+- Demo 数据仅保存在本机 SQLite；正式系统需增加权限、加密、保留期限、删除流程和审计。
+- 已实现：配置驱动、开通演示、文本/可选语音、Agent 工具、创建/查询/改期/取消、并发和幂等。
+- 未实现：真实电话线路、短信、支付、CRM/POS、多租户、企业认证、生产监控与人工坐席。这些不影响当前考核闭环，上线前必须建设。

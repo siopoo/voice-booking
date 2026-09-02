@@ -15,15 +15,19 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 import server
+from business_config import format_business_hours
 from booking_workflow import evaluate_booking_flow
 
 
-SYSTEM_PROMPT = f"""
-你是 PawPilot 宠物护理中心的 AI 语音前台。今天是 {date.today().isoformat()}。
+def build_system_prompt(config: dict[str, Any], today: date | None = None) -> str:
+    current_day = date.today() if today is None else today
+    return f"""
+你是 {config['business_name']} 的 AI 语音前台。今天是 {current_day.isoformat()}。
+门店营业时间为 {format_business_hours(config)}，仅接受当天至未来{config['booking_window_days']}天内的预约。
 
 你的目标不是闲聊，而是可靠完成一次预约。必须遵守以下业务规则：
 1. 服务、价格、营业时间只能来自 get_business_profile 和 get_services 工具，禁止编造。
-2. 用户给出日期后，必须调用 check_availability；只能向用户提供工具返回的时段。
+2. 用户给出日期后，必须带当前 service_id 调用 check_availability；只能向用户提供工具返回的时段。
 3. 收集服务项目、宠物名字和类型、日期、时间、联系人姓名、11位手机号。
 4. 信息齐全后，用一句话完整复述预约信息并询问“是否确认预约”。
 5. 只有用户在复述之后明确表示确认，才能调用 create_booking，并把 customer_confirmed 设为 true。
@@ -44,12 +48,14 @@ def _json(data: Any) -> str:
 @tool
 def get_business_profile() -> str:
     """读取门店名称、地址、营业时间与预约规则。涉及门店事实时必须使用。"""
+    config = server.current_business_config()
     return _json(
         {
-            "name": "PawPilot 宠物护理中心",
-            "address": "上海市静安区示范路 88 号",
-            "hours": "周二至周日 10:00–18:00，周一休息",
-            "booking_window": "仅接受未来14天内的预约",
+            "name": config["business_name"],
+            "address": config["address"],
+            "hours": format_business_hours(config),
+            "booking_window": f"仅接受当天至未来{config['booking_window_days']}天内的预约",
+            "timezone": config["timezone"],
         }
     )
 
@@ -57,11 +63,11 @@ def get_business_profile() -> str:
 @tool
 def get_services() -> str:
     """读取可预约的宠物护理服务、价格和预计时长。禁止凭记忆回答价格。"""
-    return _json(server.SERVICES)
+    return _json(server.current_business_config()["services"])
 
 
 @tool
-def check_availability(appointment_date: str) -> str:
+def check_availability(appointment_date: str, service_id: str = "") -> str:
     """查询某一天真实可预约的时间。
 
     Args:
@@ -71,17 +77,20 @@ def check_availability(appointment_date: str) -> str:
         target = date.fromisoformat(appointment_date)
     except ValueError:
         return _json({"error": "日期格式必须是 YYYY-MM-DD", "slots": []})
-    if target < date.today():
+    config = server.current_business_config()
+    today = server.business_now(config).date()
+    if target < today:
         return _json({"error": "不能预约过去的日期", "slots": []})
-    if target > date.today().fromordinal(date.today().toordinal() + 14):
-        return _json({"error": "只能预约未来14天内的日期", "slots": []})
-    if target.weekday() == 0:
+    if target > today.fromordinal(today.toordinal() + config["booking_window_days"]):
+        return _json({"error": f"只能预约未来{config['booking_window_days']}天内的日期", "slots": []})
+    if target.weekday() in config["closed_weekdays"]:
         return _json({"date": appointment_date, "closed": True, "slots": []})
     return _json(
         {
             "date": appointment_date,
             "closed": False,
-            "slots": server.available_slots(appointment_date),
+            "service_id": service_id or None,
+            "slots": server.available_slots(appointment_date, service_id or None),
         }
     )
 
@@ -111,7 +120,7 @@ def create_booking(
     """
     if not customer_confirmed:
         return _json({"error": "必须先向客户复述完整预约信息并获得明确确认"})
-    if not re.fullmatch(r"1\d{10}", phone):
+    if not re.fullmatch(r"1[3-9]\d{9}", phone):
         return _json({"error": "手机号必须是11位中国大陆手机号"})
     try:
         booking = server.create_booking_record(
@@ -159,11 +168,13 @@ def update_booking_draft(
         "phone": phone,
     }
     if service_id and not service_name:
-        service = next((item for item in server.SERVICES if item["id"] == service_id), None)
+        services = server.current_business_config()["services"]
+        service = next((item for item in services if item["id"] == service_id), None)
         if service:
             values["service_name"] = service["name"]
     elif service_name and not service_id:
-        service = next((item for item in server.SERVICES if item["name"] == service_name), None)
+        services = server.current_business_config()["services"]
+        service = next((item for item in services if item["name"] == service_name), None)
         if service:
             values["service_id"] = service["id"]
     return _json({key: value.strip() for key, value in values.items() if value.strip()})
@@ -260,10 +271,11 @@ def build_booking_agent(env: dict[str, str] | None = None):
     if not status["configured"]:
         raise RuntimeError("请先配置 PAWPILOT_LLM_API_KEY 和 PAWPILOT_LLM_MODEL")
     model = build_chat_model(source)
+    config = server.current_business_config()
     return create_agent(
         model=model,
         tools=TOOLS,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=build_system_prompt(config),
         checkpointer=InMemorySaver(),
     )
 
@@ -355,6 +367,7 @@ def get_booking_agent():
         os.getenv("PAWPILOT_LLM_BASE_URL", "https://api.openai.com/v1"),
         os.getenv("PAWPILOT_LLM_MODEL", ""),
         bool(os.getenv("PAWPILOT_LLM_API_KEY")),
+        server.current_business_config()["config_version"],
     )
     with _agent_lock:
         if _agent is None or signature != _agent_signature:

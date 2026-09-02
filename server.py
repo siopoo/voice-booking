@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import mimetypes
 import os
@@ -10,17 +9,26 @@ import threading
 import uuid
 from collections.abc import MutableMapping
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen as default_urlopen
 
+from business_config import (
+    DEFAULT_CONFIG_PATH,
+    business_timezone,
+    format_business_hours,
+    load_business_config,
+    save_business_config,
+)
+
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 DB_PATH = ROOT / "appointments.db"
+BUSINESS_CONFIG_PATH = DEFAULT_CONFIG_PATH
 HOST = "127.0.0.1"
 PORT = 8000
 
@@ -49,12 +57,19 @@ def load_env_file(
 
 load_env_file()
 
-SERVICES = [
-    {"id": "basic", "name": "基础洗护", "duration": 60, "price": 88},
-    {"id": "grooming", "name": "精致美容", "duration": 90, "price": 168},
-    {"id": "spa", "name": "深度护理", "duration": 90, "price": 238},
-]
-SLOTS = ["10:00", "11:30", "14:00", "15:30", "17:00"]
+def current_business_config() -> dict:
+    return load_business_config(BUSINESS_CONFIG_PATH)
+
+
+def business_now(config: dict | None = None) -> datetime:
+    active = current_business_config() if config is None else config
+    return datetime.now(business_timezone(active["timezone"]))
+
+
+# Backward-compatible constants for existing callers; new code reads current_business_config().
+_INITIAL_CONFIG = current_business_config()
+SERVICES = _INITIAL_CONFIG["services"]
+SLOTS = _INITIAL_CONFIG["appointment_slots"]
 
 
 class BookingValidationError(ValueError):
@@ -63,6 +78,21 @@ class BookingValidationError(ValueError):
 
 class BookingConflictError(RuntimeError):
     pass
+
+
+class OnboardingValidationError(ValueError):
+    pass
+
+
+ACCEPTANCE_CHECKLIST_KEYS = (
+    "business_profile_confirmed",
+    "services_confirmed",
+    "hours_confirmed",
+    "agent_config_generated",
+    "text_test_passed",
+    "voice_test_passed",
+    "customer_accepted",
+)
 
 
 def agent_status(env: dict[str, str] | None = None) -> dict:
@@ -76,10 +106,20 @@ def stt_status(env: dict[str, str] | None = None) -> dict:
     source = os.environ if env is None else env
     if source.get("PAWPILOT_STT_PROVIDER", "api").strip().lower() == "sensevoice":
         model = source.get("PAWPILOT_SENSEVOICE_MODEL", "iic/SenseVoiceSmall").strip()
-        return {"configured": bool(model), "model": model or None}
+        basic = {"configured": bool(model), "model": model or None}
+        if env is not None:
+            return basic
+        try:
+            from sensevoice_stt import sensevoice_runtime_status
+
+            runtime = sensevoice_runtime_status()
+        except Exception as error:
+            runtime = {"state": "error", "ready": False, "error": str(error)[:300]}
+        return {**basic, "provider": "sensevoice", **runtime}
     key = source.get("PAWPILOT_STT_API_KEY", "").strip()
     model = source.get("PAWPILOT_STT_MODEL", "").strip()
-    return {"configured": bool(key and model), "model": model or None}
+    basic = {"configured": bool(key and model), "model": model or None}
+    return basic
 
 
 def transcribe_audio(
@@ -165,10 +205,11 @@ def interpret_text(
         raise RuntimeError("模型 API 尚未配置")
     base_url = source.get("PAWPILOT_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     endpoint = f"{base_url}/chat/completions"
+    allowed_service_ids = "、".join(item["id"] for item in current_business_config()["services"])
     prompt = (
         "你是宠物护理预约系统的意图解析器。只返回 JSON，不要解释。"
         "格式为 {\"value\": 任意JSON值, \"confidence\": 0到1的数字}。"
-        "service 步骤的 value 只能是 basic、grooming、spa 或 null；"
+        f"service 步骤的 value 只能是 {allowed_service_ids} 或 null；"
         "date 步骤返回 YYYY-MM-DD 或 null；time 步骤返回 HH:MM 或 null；"
         "confirm 步骤返回 yes、no、restart 或 null。"
     )
@@ -240,6 +281,21 @@ def init_db() -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onboarding_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_code TEXT UNIQUE NOT NULL,
+                status TEXT NOT NULL,
+                application_json TEXT NOT NULL,
+                collected_json TEXT NOT NULL DEFAULT '{}',
+                config_json TEXT,
+                checklist_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         table_sql = db.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'appointments'"
         ).fetchone()["sql"]
@@ -299,14 +355,192 @@ def init_db() -> None:
             "ON appointments(appointment_date, appointment_time) "
             "WHERE status = 'confirmed'"
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS idempotency_records (
+                idempotency_key TEXT PRIMARY KEY,
+                operation TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
 
-def available_slots(day: str) -> list[str]:
+def _onboarding_response(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "application_code": row["application_code"],
+        "status": row["status"],
+        "application": json.loads(row["application_json"]),
+        "collected": json.loads(row["collected_json"] or "{}"),
+        "config": json.loads(row["config_json"]) if row["config_json"] else None,
+        "checklist": json.loads(row["checklist_json"] or "{}"),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_onboarding_application(application_id: int) -> dict:
+    with get_db() as db:
+        row = db.execute(
+            "SELECT * FROM onboarding_applications WHERE id = ?", (application_id,)
+        ).fetchone()
+    if row is None:
+        raise OnboardingValidationError("申请不存在")
+    return _onboarding_response(row)
+
+
+def list_onboarding_applications() -> list[dict]:
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM onboarding_applications ORDER BY id DESC"
+        ).fetchall()
+    return [_onboarding_response(row) for row in rows]
+
+
+def submit_onboarding_application(payload: dict) -> dict:
+    required = (
+        "business_name", "business_type", "website_url", "services_and_prices",
+        "email", "phone", "preferred_language",
+    )
+    if any(not str(payload.get(key, "")).strip() for key in required):
+        raise OnboardingValidationError("申请资料不完整")
+    if not re.fullmatch(r"1[3-9]\d{9}", str(payload["phone"]).strip()):
+        raise OnboardingValidationError("联系电话必须是11位中国大陆手机号")
+    if not all(payload.get(key) is True for key in (
+        "website_authorized", "contact_authorized", "representative_confirmed"
+    )):
+        raise OnboardingValidationError("必须勾选三项必要授权与身份确认")
+    now = datetime.now().isoformat(timespec="seconds")
+    code = f"APP-{uuid.uuid4().hex[:8].upper()}"
+    with get_db() as db:
+        cursor = db.execute(
+            "INSERT INTO onboarding_applications "
+            "(application_code,status,application_json,created_at,updated_at) VALUES (?,?,?,?,?)",
+            (code, "submitted", json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        application_id = cursor.lastrowid
+    return get_onboarding_application(application_id)
+
+
+def _set_onboarding_status(application_id: int, status: str, **json_fields) -> dict:
+    assignments = ["status = ?", "updated_at = ?"]
+    values: list[object] = [status, datetime.now().isoformat(timespec="seconds")]
+    for column, value in json_fields.items():
+        assignments.append(f"{column} = ?")
+        values.append(json.dumps(value, ensure_ascii=False))
+    values.append(application_id)
+    with get_db() as db:
+        cursor = db.execute(
+            f"UPDATE onboarding_applications SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        if not cursor.rowcount:
+            raise OnboardingValidationError("申请不存在")
+    return get_onboarding_application(application_id)
+
+
+def advance_onboarding_application(application_id: int, action: str) -> dict:
+    current = get_onboarding_application(application_id)
+    transitions = {
+        ("submitted", "collect"): "collecting",
+        ("collecting", "review"): "awaiting_review",
+        ("config_generated", "test"): "testing",
+    }
+    status = transitions.get((current["status"], action))
+    if status is None:
+        raise OnboardingValidationError("当前状态不能执行该操作")
+    if action == "collect":
+        collected = {
+            "source": "客户授权的公开网站 + 演示稳定数据",
+            "website_reachable": True,
+            "summary": current["application"]["services_and_prices"],
+            "human_fallback": True,
+        }
+        return _set_onboarding_status(application_id, status, collected_json=collected)
+    return _set_onboarding_status(application_id, status)
+
+
+def generate_onboarding_config(application_id: int, config: dict) -> dict:
+    current = get_onboarding_application(application_id)
+    if current["status"] not in {"submitted", "collecting", "awaiting_review", "config_generated"}:
+        raise OnboardingValidationError("当前状态不能生成配置")
+    normalized = save_business_config(config, Path(str(BUSINESS_CONFIG_PATH) + ".preview"))
+    Path(str(BUSINESS_CONFIG_PATH) + ".preview").unlink(missing_ok=True)
+    normalized.pop("config_version", None)
+    return _set_onboarding_status(application_id, "config_generated", config_json=normalized)
+
+
+def accept_onboarding_application(application_id: int, checklist: dict) -> dict:
+    current = get_onboarding_application(application_id)
+    if current["config"] is None:
+        raise OnboardingValidationError("请先生成门店配置")
+    if current["status"] != "testing":
+        raise OnboardingValidationError("请先进入测试阶段")
+    if not all(checklist.get(key) is True for key in ACCEPTANCE_CHECKLIST_KEYS):
+        raise OnboardingValidationError("所有测试与验收检查项必须通过")
+    return _set_onboarding_status(application_id, "accepted", checklist_json=checklist)
+
+
+def activate_onboarding_application(application_id: int) -> dict:
+    current = get_onboarding_application(application_id)
+    if current["status"] != "accepted" or current["config"] is None:
+        raise OnboardingValidationError("只有验收通过的配置才能激活")
+    save_business_config(current["config"], BUSINESS_CONFIG_PATH)
+    return _set_onboarding_status(application_id, "activated")
+
+
+def _service(config: dict, service_id: str) -> dict | None:
+    return next((item for item in config["services"] if item["id"] == service_id), None)
+
+
+def _validate_schedule(
+    appointment_date: str,
+    appointment_time: str,
+    service: dict,
+    *,
+    config: dict,
+    now: datetime,
+) -> tuple[str, str]:
     try:
-        target = date.fromisoformat(day)
-    except ValueError:
+        target = date.fromisoformat(str(appointment_date).strip())
+        slot_time = time.fromisoformat(str(appointment_time).strip())
+    except ValueError as error:
+        raise BookingValidationError("日期或时间格式无效") from error
+    today = now.date()
+    if target < today:
+        raise BookingValidationError("不能预约过去的日期")
+    if target > today + timedelta(days=config["booking_window_days"]):
+        raise BookingValidationError(f"只能预约当天至未来{config['booking_window_days']}天")
+    if target.weekday() in config["closed_weekdays"]:
+        raise BookingValidationError("门店当天休息，不能预约")
+    slot = slot_time.strftime("%H:%M")
+    if slot not in config["appointment_slots"]:
+        raise BookingValidationError("预约时间不属于门店允许时段")
+    start = datetime.combine(target, slot_time, tzinfo=now.tzinfo)
+    if start <= now:
+        raise BookingValidationError("该时段已经过去")
+    closing = datetime.combine(target, time.fromisoformat(config["closing_time"]), tzinfo=now.tzinfo)
+    if start + timedelta(minutes=int(service["duration"])) > closing:
+        raise BookingValidationError("该服务将在关门后结束，请选择更早时段")
+    return target.isoformat(), slot
+
+
+def available_slots(day: str, service_id: str | None = None, *, now: datetime | None = None) -> list[str]:
+    config = current_business_config()
+    current = business_now(config) if now is None else now
+    service = _service(config, service_id or config["services"][0]["id"])
+    if service is None:
         return []
-    if target < date.today() or target.weekday() == 0:
+    candidates = []
+    for slot in config["appointment_slots"]:
+        try:
+            _validate_schedule(day, slot, service, config=config, now=current)
+            candidates.append(slot)
+        except BookingValidationError:
+            continue
+    if not candidates:
         return []
     with get_db() as db:
         rows = db.execute(
@@ -315,7 +549,7 @@ def available_slots(day: str) -> list[str]:
             (day,),
         ).fetchall()
     occupied = {row["appointment_time"] for row in rows}
-    return [slot for slot in SLOTS if slot not in occupied]
+    return [slot for slot in candidates if slot not in occupied]
 
 
 def create_booking_record(payload: dict) -> dict:
@@ -329,31 +563,32 @@ def create_booking_record(payload: dict) -> dict:
         "appointment_time",
     ]
     missing = [key for key in required if not str(payload.get(key, "")).strip()]
-    service = next(
-        (item for item in SERVICES if item["id"] == payload.get("service_id")), None
-    )
+    config = current_business_config()
+    service = _service(config, str(payload.get("service_id", "")))
     if missing or service is None:
         raise BookingValidationError("预约信息不完整或服务项目无效")
-    day = str(payload["appointment_date"])
-    time = str(payload["appointment_time"])
-    fingerprint_fields = {
-        key: str(payload.get(key, "")).strip()
-        for key in required
-    }
-    idempotency_key = str(payload.get("idempotency_key", "")).strip() or hashlib.sha256(
-        json.dumps(fingerprint_fields, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    with get_db() as db:
-        existing = db.execute(
-            "SELECT * FROM appointments WHERE idempotency_key = ?",
-            (idempotency_key,),
-        ).fetchone()
-    if existing is not None:
-        return _booking_response(existing, idempotent_replay=True)
-    if time not in available_slots(day):
+    phone = str(payload["phone"]).strip()
+    if not re.fullmatch(r"1[3-9]\d{9}", phone):
+        raise BookingValidationError("手机号必须是11位中国大陆手机号")
+    idempotency_key = str(payload.get("idempotency_key", "")).strip()
+    if idempotency_key:
+        with get_db() as db:
+            record = db.execute(
+                "SELECT response_json FROM idempotency_records WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if record is not None:
+            response = json.loads(record["response_json"])
+            response["idempotent_replay"] = True
+            return response
+    day, appointment_time = _validate_schedule(
+        str(payload["appointment_date"]), str(payload["appointment_time"]), service,
+        config=config, now=business_now(config),
+    )
+    if appointment_time not in available_slots(day, service["id"]):
         raise BookingConflictError("该时段刚刚已被预约或不可用，请重新选择")
-    now = datetime.now()
-    code = f"PP{now:%m%d%H%M%S%f}"[:-3]
+    now = business_now(config)
+    code = f"PP{now:%m%d}{uuid.uuid4().hex[:10].upper()}"
     try:
         with get_db() as db:
             cursor = db.execute(
@@ -371,38 +606,47 @@ def create_booking_record(payload: dict) -> dict:
                     str(payload["pet_name"]).strip(),
                     str(payload["pet_type"]).strip(),
                     str(payload["customer_name"]).strip(),
-                    str(payload["phone"]).strip(),
+                    phone,
                     day,
-                    time,
+                    appointment_time,
                     str(payload.get("notes", "")).strip(),
                     now.isoformat(timespec="seconds"),
-                    idempotency_key,
+                    idempotency_key or None,
                 ),
             )
             booking_id = cursor.lastrowid
+            response = {
+                "id": booking_id,
+                "booking_code": code,
+                "status": "confirmed",
+                "service_id": service["id"],
+                "service_name": service["name"],
+                "pet_name": str(payload["pet_name"]).strip(),
+                "pet_type": str(payload["pet_type"]).strip(),
+                "customer_name": str(payload["customer_name"]).strip(),
+                "phone": phone,
+                "appointment_date": day,
+                "appointment_time": appointment_time,
+                "idempotent_replay": False,
+            }
+            if idempotency_key:
+                db.execute(
+                    "INSERT INTO idempotency_records VALUES (?, ?, ?, ?)",
+                    (idempotency_key, "create_booking", json.dumps(response, ensure_ascii=False), now.isoformat()),
+                )
     except sqlite3.IntegrityError as error:
-        with get_db() as db:
-            existing = db.execute(
-                "SELECT * FROM appointments WHERE idempotency_key = ?",
-                (idempotency_key,),
-            ).fetchone()
-        if existing is not None:
-            return _booking_response(existing, idempotent_replay=True)
+        if idempotency_key:
+            with get_db() as db:
+                record = db.execute(
+                    "SELECT response_json FROM idempotency_records WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+            if record is not None:
+                response = json.loads(record["response_json"])
+                response["idempotent_replay"] = True
+                return response
         raise BookingConflictError("该时段刚刚已被预约，请重新选择") from error
-    return {
-        "id": booking_id,
-        "booking_code": code,
-        "status": "confirmed",
-        "service_id": service["id"],
-        "service_name": service["name"],
-        "pet_name": str(payload["pet_name"]).strip(),
-        "pet_type": str(payload["pet_type"]).strip(),
-        "customer_name": str(payload["customer_name"]).strip(),
-        "phone": str(payload["phone"]).strip(),
-        "appointment_date": day,
-        "appointment_time": time,
-        "idempotent_replay": False,
-    }
+    return response
 
 
 def _booking_response(row: sqlite3.Row, idempotent_replay: bool) -> dict:
@@ -448,6 +692,22 @@ def find_booking_records(
     return [_booking_response(row, idempotent_replay=False) for row in rows]
 
 
+def mask_phone(phone: str) -> str:
+    return f"{phone[:3]}****{phone[-4:]}" if re.fullmatch(r"\d{11}", phone) else "已隐藏"
+
+
+def list_booking_records(*, mask_sensitive: bool = True) -> list[dict]:
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM appointments ORDER BY appointment_date, appointment_time"
+        ).fetchall()
+    values = [_booking_response(row, idempotent_replay=False) for row in rows]
+    if mask_sensitive:
+        for value in values:
+            value["phone"] = mask_phone(value["phone"])
+    return values
+
+
 def _find_owned_booking(db, booking_code: str, phone: str) -> sqlite3.Row:
     row = db.execute(
         "SELECT * FROM appointments WHERE booking_code = ? AND phone = ?",
@@ -469,15 +729,21 @@ def reschedule_booking_record(
     """Move a confirmed booking after explicit customer confirmation."""
     if not customer_confirmed:
         raise BookingValidationError("改期前必须获得客户明确确认")
-    day = appointment_date.strip()
-    slot = appointment_time.strip()
     with get_db() as db:
         current = _find_owned_booking(db, booking_code, phone)
     if current["status"] != "confirmed":
         raise BookingValidationError("只有已确认预约可以改期")
+    config = current_business_config()
+    service = _service(config, current["service_id"])
+    if service is None:
+        raise BookingValidationError("原预约服务已不在当前配置中，请联系门店")
+    day, slot = _validate_schedule(
+        appointment_date.strip(), appointment_time.strip(), service,
+        config=config, now=business_now(config),
+    )
     if current["appointment_date"] == day and current["appointment_time"] == slot:
         return _booking_response(current, idempotent_replay=True)
-    if slot not in available_slots(day):
+    if slot not in available_slots(day, service["id"]):
         raise BookingConflictError("新的预约时段不可用，请重新选择")
     try:
         with get_db() as db:
@@ -517,7 +783,8 @@ def cancel_booking_record(
 
 
 class AppHandler(SimpleHTTPRequestHandler):
-    server_version = "PawPilotDemo/1.0"
+    # HTTP's Server header is encoded as Latin-1 by the standard library.
+    server_version = "PawPilotAI/2.0"
 
     def log_message(self, fmt: str, *args: object) -> None:
         print(f"[{self.log_date_time_string()}] {fmt % args}")
@@ -538,19 +805,33 @@ class AppHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/api/config":
-            today = date.today()
+            config = current_business_config()
+            today = business_now(config).date()
             self.send_json(
                 {
                     "business": {
-                        "name": "PawPilot 宠物护理中心",
-                        "hours": "周二至周日 10:00–18:00，周一休息",
-                        "address": "上海市静安区示范路 88 号",
+                        "name": config["business_name"],
+                        "hours": format_business_hours(config),
+                        "address": config["address"],
                     },
-                    "services": SERVICES,
+                    "services": config["services"],
+                    "welcomeMessage": config["welcome_message"],
+                    "configVersion": config["config_version"],
+                    "timezone": config["timezone"],
+                    "schedule": {
+                        "openingTime": config["opening_time"],
+                        "closingTime": config["closing_time"],
+                        "closedWeekdays": config["closed_weekdays"],
+                        "bookingWindowDays": config["booking_window_days"],
+                        "appointmentSlots": config["appointment_slots"],
+                    },
                     "today": today.isoformat(),
-                    "maxDate": (today + timedelta(days=14)).isoformat(),
+                    "maxDate": (today + timedelta(days=config["booking_window_days"])).isoformat(),
                 }
             )
+            return
+        if parsed.path == "/api/onboarding/applications":
+            self.send_json({"applications": list_onboarding_applications()})
             return
         if parsed.path == "/api/agent/status":
             self.send_json(agent_status())
@@ -559,15 +840,13 @@ class AppHandler(SimpleHTTPRequestHandler):
             self.send_json(stt_status())
             return
         if parsed.path == "/api/slots":
-            day = parse_qs(parsed.query).get("date", [""])[0]
-            self.send_json({"date": day, "slots": available_slots(day)})
+            query = parse_qs(parsed.query)
+            day = query.get("date", [""])[0]
+            service_id = query.get("service_id", [None])[0]
+            self.send_json({"date": day, "slots": available_slots(day, service_id)})
             return
         if parsed.path == "/api/bookings":
-            with get_db() as db:
-                rows = db.execute(
-                    "SELECT * FROM appointments ORDER BY appointment_date, appointment_time"
-                ).fetchall()
-            self.send_json({"bookings": [dict(row) for row in rows]})
+            self.send_json({"bookings": list_booking_records(mask_sensitive=True)})
             return
         self.serve_static(parsed.path)
 
@@ -582,11 +861,24 @@ class AppHandler(SimpleHTTPRequestHandler):
         if path == "/api/transcribe":
             self.handle_transcribe()
             return
+        if path == "/api/onboarding/applications":
+            self.handle_onboarding_submit()
+            return
+        if path in {"/api/bookings/query", "/api/bookings/reschedule", "/api/bookings/cancel"}:
+            self.handle_booking_operation(path.rsplit("/", 1)[-1])
+            return
+        match = re.fullmatch(r"/api/onboarding/applications/(\d+)/(collect|review|config|test|accept|activate)", path)
+        if match:
+            self.handle_onboarding_action(int(match.group(1)), match.group(2))
+            return
         if path != "/api/bookings":
             self.send_json({"error": "接口不存在"}, HTTPStatus.NOT_FOUND)
             return
         try:
             payload = self.read_json()
+            header_key = self.headers.get("Idempotency-Key", "").strip()
+            if header_key:
+                payload["idempotency_key"] = header_key
         except (json.JSONDecodeError, UnicodeDecodeError):
             self.send_json({"error": "请求数据格式错误"}, HTTPStatus.BAD_REQUEST)
             return
@@ -602,6 +894,52 @@ class AppHandler(SimpleHTTPRequestHandler):
             )
             return
         self.send_json({**booking, "message": "预约成功"}, HTTPStatus.CREATED)
+
+    def handle_booking_operation(self, operation: str) -> None:
+        try:
+            payload = self.read_json()
+            if operation == "query":
+                result = {"bookings": find_booking_records(
+                    booking_code=str(payload.get("booking_code", "")),
+                    phone=str(payload.get("phone", "")),
+                )}
+            elif operation == "reschedule":
+                result = reschedule_booking_record(
+                    str(payload.get("booking_code", "")), str(payload.get("phone", "")),
+                    str(payload.get("appointment_date", "")), str(payload.get("appointment_time", "")),
+                    customer_confirmed=payload.get("customer_confirmed") is True,
+                )
+            else:
+                result = cancel_booking_record(
+                    str(payload.get("booking_code", "")), str(payload.get("phone", "")),
+                    customer_confirmed=payload.get("customer_confirmed") is True,
+                )
+            self.send_json(result)
+        except (BookingValidationError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+        except BookingConflictError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.CONFLICT)
+
+    def handle_onboarding_submit(self) -> None:
+        try:
+            self.send_json(submit_onboarding_application(self.read_json()), HTTPStatus.CREATED)
+        except (OnboardingValidationError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+
+    def handle_onboarding_action(self, application_id: int, action: str) -> None:
+        try:
+            payload = self.read_json()
+            if action in {"collect", "review", "test"}:
+                result = advance_onboarding_application(application_id, action)
+            elif action == "config":
+                result = generate_onboarding_config(application_id, payload.get("config", payload))
+            elif action == "accept":
+                result = accept_onboarding_application(application_id, payload.get("checklist", payload))
+            else:
+                result = activate_onboarding_application(application_id)
+            self.send_json(result)
+        except (OnboardingValidationError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def handle_agent_chat(self) -> None:
         try:
@@ -702,7 +1040,7 @@ def run() -> None:
             daemon=True,
         ).start()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
-    print(f"PawPilot Demo 已启动：http://{HOST}:{PORT}")
+    print(f"PawPilot AI语音预约系统已启动：http://{HOST}:{PORT}")
     print("按 Ctrl+C 停止服务")
     try:
         server.serve_forever()

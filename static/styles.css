@@ -86,7 +86,44 @@ dd { margin: 0; text-align: right; font-weight: 700; }
 .booking-card strong { display: block; font-size: 17px; margin-bottom: 8px; }
 .booking-card p { color: var(--muted); margin: 5px 0; font-size: 14px; }
 .booking-code { color: var(--gold); font-size: 12px; font-weight: 800; }
+.booking-status { display: inline-block; margin-top: 7px; padding: 4px 8px; border-radius: 999px; color: #276443; background: #e3f2e8; font-size: 11px; font-weight: 750; }
+.booking-status.cancelled { color: #8a3434; background: #fae8e8; }
+.bookings-section > .boundary-note { margin: 22px 30px 0; }
 footer { text-align: center; color: var(--muted); font-size: 12px; padding: 0 0 35px; }
+.nav-link, .demo-link { color: var(--gold); font-weight: 750; text-decoration: none; }
+.delivery-main { padding-bottom: 70px; }
+.delivery-hero { max-width: 860px; padding: 70px 0 38px; }
+.delivery-hero h1 { font-size: clamp(38px, 5vw, 62px); }
+.stage-rail { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin: 0 0 28px; padding: 0; list-style: none; }
+.stage-rail li { padding: 13px 8px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: var(--card); text-align: center; font-size: 12px; }
+.stage-rail li.complete { color: var(--green); border-color: #b9dbc7; background: #edf8f1; }
+.stage-rail li.active { outline: 2px solid var(--gold); font-weight: 800; }
+.delivery-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.delivery-card { padding: 28px; border: 1px solid var(--line); border-radius: 22px; background: var(--card); box-shadow: var(--shadow); }
+.delivery-card h2 { margin-bottom: 22px; }
+.wide-card { grid-column: 1 / -1; }
+.delivery-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.delivery-form label { display: grid; gap: 7px; color: var(--muted); font-size: 12px; }
+.delivery-form input, .delivery-form select, .delivery-form textarea, .config-editor { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: white; color: var(--ink); }
+.delivery-form textarea { min-height: 82px; resize: vertical; }
+.delivery-form .wide { grid-column: 1 / -1; }
+.consent-list { display: grid; gap: 9px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.consent-list label { display: flex; align-items: center; gap: 9px; }
+.consent-list input { width: auto; }
+.primary-button, .action-row button { border: 0; border-radius: 11px; padding: 12px 17px; cursor: pointer; font-weight: 750; }
+.primary-button { color: white; background: var(--gold); }
+.action-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 18px; }
+.action-row button { color: var(--green); background: #e7f0e9; }
+button:disabled { opacity: .42; cursor: not-allowed; }
+.delivery-output { min-height: 210px; }
+.empty-state { color: var(--muted); display: grid; place-items: center; text-align: center; }
+.card-copy, .boundary-note { color: var(--muted); line-height: 1.65; }
+.config-editor { min-height: 390px; font: 12px/1.55 Consolas, monospace; resize: vertical; }
+.checklist { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.checklist label { padding: 13px; border: 1px solid var(--line); border-radius: 11px; }
+.boundary-note { margin-top: 18px; padding: 13px; border-left: 3px solid var(--gold); background: #f5f0e2; font-size: 12px; }
+.toast { position: fixed; right: 24px; bottom: 24px; max-width: 420px; padding: 14px 18px; border-radius: 12px; color: white; background: var(--green); box-shadow: var(--shadow); z-index: 20; }
+.toast.error { background: #963d38; }
 @media (max-width: 820px) {
   .hero, .workspace { grid-template-columns: 1fr; }
   .hero { padding-top: 45px; gap: 20px; }
@@ -94,4 +131,9 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 0 0 
   .booking-grid { grid-template-columns: 1fr; }
   .sound-toggle { display: none; }
   .messages { height: 330px; }
+  .delivery-grid { grid-template-columns: 1fr; }
+  .wide-card { grid-column: auto; }
+  .stage-rail { grid-template-columns: repeat(2, 1fr); }
+  .delivery-form, .checklist { grid-template-columns: 1fr; }
+  .delivery-form .wide { grid-column: auto; }
 }
