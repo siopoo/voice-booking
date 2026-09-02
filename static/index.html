@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PawPilot · AI 语音预约演示</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-dot"></span>PawPilot</a>
+    <div class="status"><span class="status-dot"></span><span id="agent-mode">AI 前台在线</span></div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">AI VOICE BOOKING AGENT</p>
+        <h1>让每一次来电，<br>都变成一次安心预约。</h1>
+        <p class="lead">这是一套可完整跑通的宠物护理预约 Demo：咨询服务、查询时段、确认信息并生成真实预约记录。</p>
+      </div>
+      <div class="business-card">
+        <span>今日接待门店</span>
+        <strong id="business-name">PawPilot 宠物护理中心</strong>
+        <p id="business-hours">正在读取营业信息…</p>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <div class="call-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">LIVE DEMO</p>
+            <h2>与 AI 前台通话</h2>
+          </div>
+          <button id="reset-button" class="text-button">重新开始</button>
+        </div>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <div id="quick-replies" class="quick-replies"></div>
+
+        <form id="text-form" class="text-form">
+          <input id="text-input" autocomplete="off" placeholder="也可以输入文字，例如：我想预约洗澡">
+          <button type="submit">发送</button>
+        </form>
+
+        <div class="voice-controls">
+          <button id="mic-button" class="mic-button" type="button" aria-label="开始说话">
+            <span class="mic-icon">●</span>
+          </button>
+          <div class="voice-feedback">
+            <strong id="voice-title">点击话筒开始说话</strong>
+            <span id="voice-hint">推荐使用最新版 Edge 或 Chrome</span>
+            <div class="voice-meter" aria-label="麦克风音量"><i id="voice-level"></i></div>
+            <select id="mic-device" aria-label="麦克风设备">
+              <option value="">自动选择麦克风</option>
+            </select>
+          </div>
+          <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> 自动播报</label>
+        </div>
+      </div>
+
+      <aside class="summary-panel">
+        <p class="eyebrow">BOOKING DRAFT</p>
+        <h2>预约单</h2>
+        <div class="agent-core">
+          <strong>业务核心：Agent → Tools → Database</strong>
+          <span>模型负责决策，工具负责事实与执行。</span>
+        </div>
+        <div id="flow-stage" class="flow-stage" data-stage="idle">等待开始</div>
+        <div id="agent-trace" class="agent-trace" aria-live="polite"></div>
+        <dl id="summary-list">
+          <div><dt>服务</dt><dd data-key="service">待确认</dd></div>
+          <div><dt>宠物</dt><dd data-key="pet">待确认</dd></div>
+          <div><dt>日期</dt><dd data-key="date">待确认</dd></div>
+          <div><dt>时间</dt><dd data-key="time">待确认</dd></div>
+          <div><dt>联系人</dt><dd data-key="customer">待确认</dd></div>
+          <div><dt>电话</dt><dd data-key="phone">待确认</dd></div>
+        </dl>
+        <div id="booking-result" class="booking-result hidden"></div>
+        <div class="trust-note">信息确认后才会提交预约；时段由后台实时校验，不由模型猜测。</div>
+      </aside>
+    </section>
+
+    <section class="bookings-section">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">OPERATIONS VIEW</p>
+          <h2>预约结果</h2>
+        </div>
+        <button id="refresh-bookings" class="text-button">刷新</button>
+      </div>
+      <div id="bookings" class="booking-grid"></div>
+    </section>
+  </main>
+
+  <footer>演示数据仅保存在本机 SQLite 数据库中</footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

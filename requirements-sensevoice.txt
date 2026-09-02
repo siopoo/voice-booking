@@ -1,0 +1,4 @@
+# Install a CUDA-enabled torch and torchaudio build first. See README.md.
+funasr==1.4.11
+modelscope
+av
