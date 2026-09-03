@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict
 
-
 Intent = Literal[
     "create", "lookup", "reschedule", "cancel", "business_info", "service_info", "unknown"
 ]

@@ -8,7 +8,6 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agents.state import BookingAgentState
 
-
 REQUIRED_BOOKING_FIELDS = [
     "service_id", "pet_name", "pet_type", "appointment_date",
     "appointment_time", "customer_name", "phone",

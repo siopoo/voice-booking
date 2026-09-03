@@ -7,7 +7,6 @@ import pytest
 from app.agents.state import BookingAgentState
 from app.agents.workflow import REQUIRED_BOOKING_FIELDS, build_booking_workflow, classify_intent
 
-
 FULL_DRAFT = {
     "service_id": "basic",
     "service_name": "基础洗护",

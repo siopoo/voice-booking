@@ -8,7 +8,6 @@ from typing import Any, Callable
 from app.core.exceptions import BookingConflictError, BookingValidationError
 from app.repositories.booking_repository import BookingRepository, IntegrityError
 
-
 REQUIRED_FIELDS = (
     "service_id", "pet_name", "pet_type", "customer_name", "phone",
     "appointment_date", "appointment_time",

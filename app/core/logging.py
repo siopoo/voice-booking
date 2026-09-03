@@ -5,7 +5,6 @@ import logging
 import re
 from typing import Any
 
-
 SECRET_KEYS = {"authorization", "api_key", "apikey", "token", "secret", "password"}
 
 
