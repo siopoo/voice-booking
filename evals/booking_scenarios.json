@@ -1,8 +1,8 @@
 [
   {"id":"intent-create","turns":[{"text":"我想预约洗护"}],"expected":{"intent":"create","stage":"collecting","writes":0}},
   {"id":"intent-lookup","turns":[{"text":"查一下我的预约"}],"expected":{"intent":"lookup","stage":"lookup","writes":0}},
-  {"id":"intent-reschedule","turns":[{"text":"我要改期"}],"expected":{"intent":"reschedule","stage":"reschedule","writes":0}},
-  {"id":"intent-cancel","turns":[{"text":"取消预约"}],"expected":{"intent":"cancel","stage":"cancel","writes":0}},
+  {"id":"intent-reschedule","turns":[{"text":"我要改期"}],"expected":{"intent":"reschedule","stage":"awaiting_booking_lookup","writes":0}},
+  {"id":"intent-cancel","turns":[{"text":"取消预约"}],"expected":{"intent":"cancel","stage":"awaiting_booking_lookup","writes":0}},
   {"id":"intent-business","turns":[{"text":"你们几点营业"}],"expected":{"intent":"business_info","stage":"business_info","writes":0}},
   {"id":"intent-service","turns":[{"text":"洗护多少钱"}],"expected":{"intent":"service_info","stage":"service_info","writes":0}},
   {"id":"intent-unknown","turns":[{"text":"今天天气如何"}],"expected":{"intent":"unknown","stage":"unknown","writes":0}},

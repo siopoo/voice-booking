@@ -26,5 +26,9 @@ class AgentInvocationError(PawPilotError, RuntimeError):
     pass
 
 
+class InvalidStateTransition(PawPilotError, RuntimeError):
+    pass
+
+
 class SpeechRecognitionError(PawPilotError, RuntimeError):
     pass

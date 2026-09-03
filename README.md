@@ -11,7 +11,7 @@
 - 双运行模式：可靠模式无需 LLM；真实 Agent 模式支持 OpenAI-compatible 模型。
 - 语音入口：浏览器语音、OpenAI-compatible STT 或本地 SenseVoice；文字输入始终可用。
 - 客户开通：申请、采集、审核、生成配置、测试、验收、激活完整状态流。
-- 工程化：分层架构、类型化异常、结构化脱敏日志、69 个 Python 测试、30 条 Agent Eval、前端单测、Docker 和 CI。
+- 工程化：分层架构、类型化异常、结构化脱敏日志、Python 测试、30 条 Agent Eval、前端单测、Docker 和 CI。
 
 ## 架构
 
@@ -21,15 +21,16 @@ Browser (voice/text)
         v
 HTTP API / static UI  ---- request_id / sanitized errors
         |
-        +--> LangChain model + thin tools
+        +--> LLM (untrusted)
+        |    intent / field extraction / read-only tools
         |          |
         |          v
-        |    LangGraph booking workflow
-        |    intent -> collect -> availability -> confirmation -> write
+        |    LangGraph write-control plane
+        |    validate -> availability -> trusted confirmation -> mutation node
         |          |
         +----------+
                    v
-        Booking / Onboarding / Speech Services
+        BookingService (create / reschedule / cancel)
                    |
              Repositories
                    |
@@ -66,6 +67,8 @@ understand_request
 ```
 
 当日期或时间改变，可用时段与已选时段立即失效；服务改变时，价格、时长、可用时段与已选时段全部失效。重复确认看到已有 `booking_result` 后直接完成，不再次写库。
+
+LLM 面向的工具只有事实读取、草稿更新、时段查询和预约查找。创建、改期、取消工具不绑定给模型；这些数据库变更只能由确定性的 LangGraph 节点在状态 Guard 通过后执行。
 
 ## 本地启动
 

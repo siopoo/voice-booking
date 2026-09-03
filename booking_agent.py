@@ -216,16 +216,20 @@ def cancel_booking(
         return _json({"error": str(error)})
 
 
-TOOLS = [
+READ_TOOLS = [
     get_business_profile,
     get_services,
     update_booking_draft,
     check_availability,
-    create_booking,
     find_bookings,
+]
+WRITE_TOOLS = [
+    create_booking,
     reschedule_booking,
     cancel_booking,
 ]
+LLM_TOOLS = READ_TOOLS
+TOOLS = [*READ_TOOLS, *WRITE_TOOLS]
 
 
 def build_chat_model(env: dict[str, str] | None = None, http_client=None) -> ChatOpenAI:
@@ -257,7 +261,7 @@ def build_booking_agent(env: dict[str, str] | None = None):
     config = server.current_business_config()
     return create_agent(
         model=model,
-        tools=TOOLS,
+        tools=LLM_TOOLS,
         system_prompt=build_system_prompt(config),
         checkpointer=InMemorySaver(),
     )
@@ -303,7 +307,6 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
     if reply_message is None:
         raise RuntimeError("Agent 没有返回回复")
     draft: dict[str, Any] = {}
-    booking_result = None
     for message in messages:
         if not isinstance(message, ToolMessage):
             continue
@@ -317,20 +320,6 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
             draft.update(
                 {key: item for key, item in value[0].items() if item not in (None, "")}
             )
-        elif message.name in {"create_booking", "reschedule_booking", "cancel_booking"}:
-            if isinstance(value, dict) and not value.get("error"):
-                booking_result = value
-                draft.update(
-                    {
-                        key: value[key]
-                        for key in (
-                            "service_id", "service_name", "pet_name", "pet_type",
-                            "customer_name", "phone", "appointment_date",
-                            "appointment_time", "booking_code", "status",
-                        )
-                        if value.get(key) not in (None, "")
-                    }
-                )
     with _workflow_lock:
         previous = _workflow_states.get(session_id, {})
         workflow = build_booking_workflow(
@@ -344,7 +333,17 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
                         f"{booking_draft.get('appointment_date', '')}:"
                         f"{booking_draft.get('appointment_time', '')}"
                     ),
-                }
+                },
+                customer_confirmed=True,
+            ),
+            booking_finder=lambda code, phone: server.find_booking_records(
+                booking_code=code, phone=phone
+            ),
+            booking_rescheduler=lambda code, phone, day, slot: server.reschedule_booking_record(
+                code, phone, day, slot, customer_confirmed=True
+            ),
+            booking_canceller=lambda code, phone: server.cancel_booking_record(
+                code, phone, customer_confirmed=True
             ),
         ).invoke(
             {
@@ -352,7 +351,6 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
                 "thread_id": session_id,
                 "messages": [{"role": "user", "content": user_text}],
                 "draft_updates": draft,
-                **({"booking_result": booking_result} if booking_result else {}),
             }
         )
         _workflow_states[session_id] = workflow
@@ -371,8 +369,8 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
         "reply": _message_text(reply_message),
         "tool_calls": tool_calls,
         "latency_ms": latency_ms,
-        "draft": draft,
-        "flow": evaluate_booking_flow(draft),
+        "draft": workflow.get("booking_draft", draft),
+        "flow": evaluate_booking_flow(workflow.get("booking_draft", draft)),
         "workflow": {
             key: workflow.get(key)
             for key in (

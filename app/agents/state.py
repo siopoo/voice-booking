@@ -21,6 +21,8 @@ class BookingAgentState(TypedDict, total=False):
     selected_slot: str | None
     confirmation_status: ConfirmationStatus
     booking_result: dict[str, Any] | None
+    found_bookings: list[dict[str, Any]]
+    target_booking: dict[str, Any] | None
     stage: str
     error: str | None
     next_question: str

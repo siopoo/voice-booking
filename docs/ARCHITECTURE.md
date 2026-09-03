@@ -53,9 +53,21 @@ Booking Service 做格式、预约窗口、休息日、营业时间和服务结�
 
 ## 6. 模型与工具边界
 
-LangChain 模型负责自然语言理解和友好回复。工具是薄适配器：读取配置或调用 Service，不包含第二套业务规则。提示词明确声明 LangGraph 是最终裁决者，工具失败时返回结构化错误。
+LangChain 模型负责自然语言理解和友好回复。LLM 不是可信授权边界，模型生成的 Tool Call 参数一律视为不可信输入。模型只绑定读取事实、更新草稿、查询时段和查找预约的工具；创建、改期、取消没有暴露给 LLM。
+
+所有数据库变更都由确定性的 LangGraph 状态迁移授权，并由对应 Graph mutation node 调用现有 Booking Service。即使模型伪造 `customer_confirmed=True` 或伪造写工具结果，也不能进入数据库写路径。
 
 可靠模式不调用模型；真实 Agent 模式使用 OpenAI-compatible Chat API。两种模式共享同一个 SQLite、配置和业务 Service。
+
+### Safety Invariants
+
+1. 没有基于最后一条真实用户消息得出的明确确认，数据库不得写入。
+2. LLM 无法直接调用 create、reschedule 或 cancel 写操作。
+3. 日期、时间或服务变化会使旧可用性、选中时段和确认状态失效。
+4. 重复确认不会创建重复预约。
+5. 数据库唯一约束始终是时段冲突的最终裁决者。
+
+写操作采用四层保护：conditional edge、mutation node guard、Service validation、database constraint。
 
 ## 7. 可观测性与错误模型
 

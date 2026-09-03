@@ -166,8 +166,8 @@ def available_slots(day: str, service_id: str | None = None, *, now: datetime | 
     return service.available_slots(day, service_id)
 
 
-def create_booking_record(payload: dict) -> dict:
-    return _booking_service().create(payload, customer_confirmed=True)
+def create_booking_record(payload: dict, *, customer_confirmed: bool = True) -> dict:
+    return _booking_service().create(payload, customer_confirmed=customer_confirmed)
 
 
 def find_booking_records(
