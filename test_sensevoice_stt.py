@@ -1,7 +1,33 @@
 import unittest
+from unittest.mock import patch
 
 
 class SenseVoiceRuntimeTests(unittest.TestCase):
+    def test_auto_device_falls_back_to_cpu_when_optional_torch_is_missing(self) -> None:
+        import builtins
+
+        import sensevoice_stt
+
+        real_import = builtins.__import__
+        calls = []
+
+        def import_without_torch(name, *args, **kwargs):
+            if name == "torch":
+                raise ModuleNotFoundError("No module named 'torch'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_torch):
+            with self.assertRaisesRegex(RuntimeError, "model unavailable"):
+                sensevoice_stt.warmup_sensevoice(
+                    env={"PAWPILOT_SENSEVOICE_MODEL": "demo"},
+                    model_getter=lambda model, device, hub: calls.append(
+                        (model, device, hub)
+                    )
+                    or (_ for _ in ()).throw(RuntimeError("model unavailable")),
+                )
+
+        self.assertEqual(calls, [("demo", "cpu", "ms")])
+
     def test_failed_warmup_is_reported_as_not_ready(self) -> None:
         import sensevoice_stt
 
@@ -19,7 +45,8 @@ class SenseVoiceRuntimeTests(unittest.TestCase):
         try:
             from sensevoice_stt import warmup_sensevoice
         except ImportError:
-            warmup_sensevoice = lambda *_args, **_kwargs: None
+            def warmup_sensevoice(*_args, **_kwargs):
+                return None
         calls = []
 
         result = warmup_sensevoice(
@@ -38,7 +65,8 @@ class SenseVoiceRuntimeTests(unittest.TestCase):
         try:
             from sensevoice_stt import transcribe_sensevoice
         except ModuleNotFoundError:
-            transcribe_sensevoice = lambda *_args, **_kwargs: None
+            def transcribe_sensevoice(*_args, **_kwargs):
+                return None
 
         calls = []
         model_calls = []

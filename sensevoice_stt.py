@@ -23,7 +23,10 @@ def _set_runtime(**changes) -> None:
 def _resolve_device(configured_device: str) -> str:
     if configured_device and configured_device.lower() != "auto":
         return configured_device
-    import torch
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return "cpu"
 
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
