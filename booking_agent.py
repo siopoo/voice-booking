@@ -15,30 +15,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 import server
+from app.agents.prompts import build_system_prompt
+from app.agents.workflow import build_booking_workflow, evaluate_booking_flow
 from business_config import format_business_hours
-from booking_workflow import evaluate_booking_flow
-
-
-def build_system_prompt(config: dict[str, Any], today: date | None = None) -> str:
-    current_day = date.today() if today is None else today
-    return f"""
-你是 {config['business_name']} 的 AI 语音前台。今天是 {current_day.isoformat()}。
-门店营业时间为 {format_business_hours(config)}，仅接受当天至未来{config['booking_window_days']}天内的预约。
-
-你的目标不是闲聊，而是可靠完成一次预约。必须遵守以下业务规则：
-1. 服务、价格、营业时间只能来自 get_business_profile 和 get_services 工具，禁止编造。
-2. 用户给出日期后，必须带当前 service_id 调用 check_availability；只能向用户提供工具返回的时段。
-3. 收集服务项目、宠物名字和类型、日期、时间、联系人姓名、11位手机号。
-4. 信息齐全后，用一句话完整复述预约信息并询问“是否确认预约”。
-5. 只有用户在复述之后明确表示确认，才能调用 create_booking，并把 customer_confirmed 设为 true。
-6. 如果用户没有确认、表示修改或取消，不得调用 create_booking。
-7. 如果创建时提示时段冲突，重新调用 check_availability 并提供其他时段。
-8. 每次只问一个最必要的问题，回答简短、自然，适合语音播报。
-9. 应主动说明自己是 AI 前台；不得承诺工具没有返回的优惠、医疗效果或服务。
-10. 每当客户提供或修改预约字段，必须调用 update_booking_draft，把已知字段结构化记录；不要猜测未知字段。
-11. 查询已有预约必须核对预约编号或手机号；改期和取消前必须完整复述变更并获得明确确认。
-12. 改期必须先调用 check_availability，再调用 reschedule_booking；取消必须调用 cancel_booking。
-""".strip()
 
 
 def _json(data: Any) -> str:
@@ -320,6 +299,7 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
     if reply_message is None:
         raise RuntimeError("Agent 没有返回回复")
     draft: dict[str, Any] = {}
+    booking_result = None
     for message in messages:
         if not isinstance(message, ToolMessage):
             continue
@@ -335,6 +315,7 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
             )
         elif message.name in {"create_booking", "reschedule_booking", "cancel_booking"}:
             if isinstance(value, dict) and not value.get("error"):
+                booking_result = value
                 draft.update(
                     {
                         key: value[key]
@@ -346,6 +327,31 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
                         if value.get(key) not in (None, "")
                     }
                 )
+    with _workflow_lock:
+        previous = _workflow_states.get(session_id, {})
+        workflow = build_booking_workflow(
+            lambda day, service_id: server.available_slots(day, service_id),
+            lambda booking_draft: server.create_booking_record(
+                {
+                    **booking_draft,
+                    "notes": "LangGraph Agent 预约",
+                    "idempotency_key": (
+                        f"agent:{session_id}:{booking_draft.get('service_id', '')}:"
+                        f"{booking_draft.get('appointment_date', '')}:"
+                        f"{booking_draft.get('appointment_time', '')}"
+                    ),
+                }
+            ),
+        ).invoke(
+            {
+                **previous,
+                "thread_id": session_id,
+                "messages": [{"role": "user", "content": user_text}],
+                "draft_updates": draft,
+                **({"booking_result": booking_result} if booking_result else {}),
+            }
+        )
+        _workflow_states[session_id] = workflow
     latency_ms = round((clock() - started_at) * 1000)
     return {
         "reply": _message_text(reply_message),
@@ -353,12 +359,22 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
         "latency_ms": latency_ms,
         "draft": draft,
         "flow": evaluate_booking_flow(draft),
+        "workflow": {
+            key: workflow.get(key)
+            for key in (
+                "intent", "booking_draft", "missing_fields", "availability",
+                "selected_slot", "confirmation_status", "booking_result", "stage",
+                "error", "next_question", "trace",
+            )
+        },
     }
 
 
 _agent = None
 _agent_signature = None
 _agent_lock = threading.Lock()
+_workflow_lock = threading.Lock()
+_workflow_states: dict[str, dict[str, Any]] = {}
 
 
 def get_booking_agent():
