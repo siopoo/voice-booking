@@ -6,4 +6,6 @@ appointments.db-*
 .env
 server.*.log
 .pytest_cache/
+.ruff_cache/
+data/
 .DS_Store

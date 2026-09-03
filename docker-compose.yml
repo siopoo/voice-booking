@@ -1,0 +1,21 @@
+services:
+  pawpilot:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      PAWPILOT_HOST: 0.0.0.0
+      PAWPILOT_PORT: 8000
+      PAWPILOT_DATABASE_PATH: /app/data/appointments.db
+      PAWPILOT_BUSINESS_CONFIG_PATH: /app/config/business.json
+      PAWPILOT_LLM_API_KEY: ${PAWPILOT_LLM_API_KEY:-}
+      PAWPILOT_LLM_MODEL: ${PAWPILOT_LLM_MODEL:-}
+      PAWPILOT_LLM_BASE_URL: ${PAWPILOT_LLM_BASE_URL:-https://api.openai.com/v1}
+      PAWPILOT_STT_PROVIDER: ${PAWPILOT_STT_PROVIDER:-api}
+      PAWPILOT_STT_API_KEY: ${PAWPILOT_STT_API_KEY:-}
+      PAWPILOT_STT_MODEL: ${PAWPILOT_STT_MODEL:-}
+      PAWPILOT_STT_BASE_URL: ${PAWPILOT_STT_BASE_URL:-https://api.openai.com/v1}
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped

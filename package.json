@@ -1,0 +1,8 @@
+{
+  "name": "pawpilot-frontend-tests",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node agent_client_test.mjs && node draft_state_test.mjs && node transcription_client_test.mjs && node voice_activity_test.mjs && node voice_session_test.mjs"
+  }
+}
