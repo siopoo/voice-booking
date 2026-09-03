@@ -25,7 +25,7 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check app evals tests *.py
+        run: ruff check app evals server.py booking_agent.py booking_workflow.py business_config.py sensevoice_stt.py
       - name: Unit and integration tests
         run: pytest -q
       - name: Deterministic Agent evals

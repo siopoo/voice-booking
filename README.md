@@ -1,103 +1,113 @@
-# PawPilot AI语音预约系统
+# PawPilot AI Voice Booking Agent
 
-用于 AI 开发工程师考核的可运行 Demo，参考 CallPilot 类型产品的业务路径。项目展示两条闭环：客户从申请、审核、配置到 Demo 激活；访客从语音/文字咨询到预约创建、查询、改期和取消。
+一个面向宠物护理门店的可运行 AI 语音预约系统。它不是只会聊天的网页 Demo：LangGraph 负责业务状态推进，Service 负责规则与事务，SQLite 保存真实预约；LLM 只承担自然语言理解与表达，不能绕过确认门槛直接决定业务事实。
 
-> 当前是本地单门店演示系统。没有实现真实电话号码、短信发送、支付或医疗建议，“Demo 已激活”不等于电话渠道已开通。
+## 已实现能力
 
-## 核心设计
+- 新建预约：服务、宠物、日期、时段、联系人、手机号逐项收集。
+- 查询、改期、取消：按预约编号或手机号核验，改期和取消必须明确确认。
+- 真实可用时段：营业时间、休息日、服务时长、预约窗口、已占用时段共同计算。
+- 写入安全：明确确认才创建；SQLite 条件唯一索引处理并发抢占；幂等键阻止重复预约。
+- 双运行模式：可靠模式无需 LLM；真实 Agent 模式支持 OpenAI-compatible 模型。
+- 语音入口：浏览器语音、OpenAI-compatible STT 或本地 SenseVoice；文字输入始终可用。
+- 客户开通：申请、采集、审核、生成配置、测试、验收、激活完整状态流。
+- 工程化：分层架构、类型化异常、结构化脱敏日志、69 个 Python 测试、30 条 Agent Eval、前端单测、Docker 和 CI。
 
-```text
-浏览器麦克风/文字
-  ├─ SenseVoice（可选）→ 失败回退浏览器 SpeechRecognition/文字
-  └─ 文本
-       ↓
-LangChain Agent（理解、决策、自然回复）
-       ↓ LangGraph 预约阶段 + 8 个业务工具
-配置事实 ─→ 统一预约校验 ─→ SQLite
-       ↑        手机/时区/日期/时长/并发/幂等
-前端草稿、工具轨迹、耗时、预约状态
-```
-
-大模型不能直接决定价格、可用时段或数据库结果。门店事实来自 `config/business.json`，所有写入最终经过后端规则和数据库约束。模型未配置时，本地可靠流程仍能完成基础预约。
-
-## 客户开通与交付
-
-`客户申请与三项授权 → 公开信息整理 → 人工审核 → 门店配置 → 文字/语音测试 → 客户验收 → Demo激活 → 后续商业电话交付`
-
-- 页面：`http://127.0.0.1:8000/delivery.html`
-- 文档：[客户开通与交付流程](docs/客户开通与交付流程.md)
-- 考核材料：[项目讲解稿](docs/项目讲解稿.md) · [现场演示脚本](docs/现场演示脚本.md) · [常见问题与答案](docs/常见问题与答案.md)
-
-申请、采集结果、状态、配置草稿和验收清单保存在 SQLite；激活会更新当前门店配置。外部网站不可达时使用稳定演示数据或人工录入回退。
-
-## AI 预约业务流程
-
-工具：`get_business_profile`、`get_services`、`update_booking_draft`、`check_availability`、`create_booking`、`find_bookings`、`reschedule_booking`、`cancel_booking`。
-
-系统收集服务、宠物名称/类型、日期、时间、联系人和 11 位大陆手机号。信息齐全后完整复述，只有明确确认才创建。后端统一验证 Asia/Shanghai 当地时间、当天至配置窗口、休息日、当天过期时段、允许时段、服务结束不晚于关门、占用冲突。创建与改期共用这些规则；取消后释放时段。
-
-后端也提供可选 REST 接口：`POST /api/bookings`、`POST /api/bookings/query`、`POST /api/bookings/reschedule`、`POST /api/bookings/cancel`，方便不经过页面的系统集成和验收。
-
-`Idempotency-Key` 在一次提交过程中复用，服务器保存不可变响应快照。新会话产生新键，因此取消后可合法重约相同信息。
-
-## 目录
+## 架构
 
 ```text
-voice-booking/
-├─ server.py                 # HTTP API、预约规则、SQLite、开通流程
-├─ booking_agent.py          # LangChain Agent 与工具
-├─ booking_workflow.py       # LangGraph 确定性流程状态
-├─ business_config.py        # 配置校验、版本与安全回退
-├─ sensevoice_stt.py         # 本地 STT 与真实运行状态
-├─ config/business.json      # 当前有效门店配置
-├─ static/                   # 预约主页、交付页、原生 JS/CSS
-├─ docs/                     # 业务与考核材料
-├─ test_*.py / *_test.mjs    # Python 与 Node 测试
-└─ .env.example              # API 配置模板
+Browser (voice/text)
+        |
+        v
+HTTP API / static UI  ---- request_id / sanitized errors
+        |
+        +--> LangChain model + thin tools
+        |          |
+        |          v
+        |    LangGraph booking workflow
+        |    intent -> collect -> availability -> confirmation -> write
+        |          |
+        +----------+
+                   v
+        Booking / Onboarding / Speech Services
+                   |
+             Repositories
+                   |
+                SQLite
 ```
 
-## Windows 安装与启动
+关键边界：
 
-请先进入实际克隆目录；新克隆项目**不会预先存在 `.venv`**。
+- `app/agents/`：统一的 `BookingAgentState`、LangGraph 节点/条件边、提示词。
+- `app/services/`：预约、开通和语音业务规则，不依赖 HTTP。
+- `app/repositories/`：SQLite 持久化与查询。
+- `app/api/`：路由、状态码、输入输出和安全错误映射。
+- `server.py`：兼容入口和依赖组装，从原约 1045 行缩减到约 256 行。
+
+更详细的状态机、事务边界和设计取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## LangGraph 状态机
+
+`BookingAgentState` 是预约流程的单一事实源，包含：
+
+`messages`、`thread_id`、`intent`、`booking_draft`、`missing_fields`、`availability`、`selected_slot`、`confirmation_status`、`booking_result`、`stage`、`error`。
+
+主要节点：
+
+```text
+understand_request
+  -> collect_booking_info
+      -> ask_for_missing_info -> END
+      -> check_availability
+          -> suggest_alternatives -> END
+          -> await_confirmation
+              -> END (模糊/拒绝/修改)
+              -> create_booking -> completed -> END (明确确认)
+```
+
+当日期或时间改变，可用时段与已选时段立即失效；服务改变时，价格、时长、可用时段与已选时段全部失效。重复确认看到已有 `booking_result` 后直接完成，不再次写库。
+
+## 本地启动
+
+要求 Python 3.11+。
 
 ```powershell
-cd voice-booking
-py -3.11 -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 python server.py
 ```
 
-打开预约主页 `http://127.0.0.1:8000/` 或客户开通页 `http://127.0.0.1:8000/delivery.html`。终端按 `Ctrl+C` 停止。
+打开 <http://127.0.0.1:8000/>，运营交付页是 <http://127.0.0.1:8000/delivery.html>，健康检查是 <http://127.0.0.1:8000/api/health>。
 
-不创建 `.env`、不配置 API Key 也可启动，页面显示“本地可靠模式”，使用文字或浏览器语音完成预约。
+默认可靠模式不需要 API Key，预约、查询、改期、取消和开通流程都能运行。
 
-## 配置 DeepSeek / OpenAI 兼容模型
+## 模型与语音配置
 
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
+配置只放在项目根目录 `.env`，不要把真实密钥提交到 Git：
 
 ```dotenv
-PAWPILOT_LLM_API_KEY=替换为真实密钥
+PAWPILOT_LLM_API_KEY=your-api-key
 PAWPILOT_LLM_MODEL=deepseek-chat
 PAWPILOT_LLM_BASE_URL=https://api.deepseek.com
 PAWPILOT_LLM_TIMEOUT=45
 PAWPILOT_LLM_MAX_RETRIES=3
 ```
 
-保存后重启。`.env` 已被 Git 忽略；不要把密钥粘贴到代码、截图或提交记录。
+OpenAI-compatible 语音转文字：
 
-## 配置语音识别
+```dotenv
+PAWPILOT_STT_PROVIDER=api
+PAWPILOT_STT_API_KEY=your-stt-key
+PAWPILOT_STT_MODEL=whisper-1
+PAWPILOT_STT_BASE_URL=https://api.openai.com/v1
+```
 
-### 本地 SenseVoice
-
-先按显卡环境安装匹配的 PyTorch/torchaudio，再执行：
+本地 SenseVoice：
 
 ```powershell
-pip install -r requirements-sensevoice.txt
+python -m pip install -r requirements-sensevoice.txt
 ```
 
 ```dotenv
@@ -108,58 +118,73 @@ PAWPILOT_SENSEVOICE_DEVICE=auto
 PAWPILOT_SENSEVOICE_LANGUAGE=zh
 ```
 
-模型首次下载可能较慢。`GET /api/stt/status` 对 SenseVoice 返回 `loading/ready/error` 的真实状态；失败时页面回退浏览器识别或文字。
+可选运行配置：`PAWPILOT_HOST`、`PAWPILOT_PORT`、`PAWPILOT_DATABASE_PATH`、`PAWPILOT_BUSINESS_CONFIG_PATH`、`PAWPILOT_LOG_LEVEL`。完整示例见 `.env.example`。
 
-### OpenAI 兼容 STT
+## Docker
 
-```dotenv
-PAWPILOT_STT_PROVIDER=api
-PAWPILOT_STT_API_KEY=替换为独立语音密钥
-PAWPILOT_STT_MODEL=whisper-1
-PAWPILOT_STT_BASE_URL=https://api.openai.com/v1
+Docker Compose 不要求 LLM Key；未提供时系统自动保持可靠模式。
+
+```bash
+docker compose up --build
 ```
 
-LLM Key 与 STT Key 分离；DeepSeek Chat API 本身不等于语音转文字 API。
+数据库持久化到 `./data`，门店配置挂载自 `./config`。停止：
 
-## 门店配置
+```bash
+docker compose down
+```
 
-直接编辑 `config/business.json`，或通过交付页审核并激活。配置包含名称、类型、地址、时区、营业时间、休息日、预约窗口、服务、价格、时长、可选时段、语言和欢迎语。读取失败会输出错误并使用安全默认配置；配置版本变化后 Agent 自动重建。
-
-## 测试
+## 测试与评测
 
 ```powershell
-python -m unittest -v test_booking_agent.py test_server.py test_sensevoice_stt.py test_business_config.py test_booking_rules.py test_onboarding.py
-node agent_client_test.mjs
-node draft_state_test.mjs
-node transcription_client_test.mjs
-node voice_activity_test.mjs
-node voice_session_test.mjs
+python -m pip install -r requirements-dev.txt
+pytest -q
+ruff check app evals server.py booking_agent.py booking_workflow.py business_config.py sensevoice_stt.py
+python -m evals.run_evals
+npm test
 ```
 
-覆盖配置、Agent 工具、API、开通状态、授权、手机号、日期窗口、休息日、过期时段、服务越界、并发抢占、幂等快照、取消释放、脱敏和 STT 失败状态。
+Agent Eval 完全离线，不调用真实模型。当前基线：
 
-## 完整现场演示
+| 指标 | 结果 |
+|---|---:|
+| 场景数 | 30 |
+| 通过 | 30 |
+| 明确确认后才写入 | 100% |
+| 重复写入 | 0 |
+| 业务事实幻觉 | 0 |
 
-1. 在 `/delivery.html` 提交预填申请，展示三项授权。
-2. 依次资料采集、人工审核，修改服务价格或欢迎语。
-3. 生成配置、进入测试、勾选七项验收、激活 Demo。
-4. 打开 `/`，确认门店和服务同步。
-5. 询价 → 选服务/日期 → 查询真实时段 → 填联系人手机号。
-6. 确认前修改时间，观察草稿与工具轨迹更新，再明确确认。
-7. 查看预约编号、脱敏手机号和状态；演示冲突、查询、改期、取消与释放。
+场景覆盖意图路由、缺字段、多轮收集、模糊/明确确认、拒绝、修改、字段失效、冲突替代、重复确认和服务异常。失败报告包含逐轮对话和节点 trace。
 
-## 常见错误
+## 核心 API
 
-- **网页空白/旧 UI**：确认在仓库目录运行 `python server.py`，按 `Ctrl+F5`。
-- **端口 8000 占用**：停止旧 `server.py` 进程后重启。
-- **Agent Connection error**：检查 Base URL、模型名、密钥和网络；本地模式不受影响。
-- **SenseVoice不可用**：查看 `/api/stt/status` 和终端错误，核对依赖、模型仓库与设备；先用浏览器语音/文字。
-- **浏览器 network 错误**：浏览器在线识别网络不可达，改用 SenseVoice 或文字。
-- **日期无时段**：可能是休息日、超过窗口、时段已过/占用或服务会超过关门时间。
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/config` | 门店与服务事实 |
+| GET | `/api/slots?date=&service_id=` | 查询真实可用时段 |
+| POST | `/api/bookings` | 创建预约，支持 `Idempotency-Key` |
+| POST | `/api/bookings/query` | 查询预约 |
+| POST | `/api/bookings/reschedule` | 明确确认后改期 |
+| POST | `/api/bookings/cancel` | 明确确认后取消 |
+| POST | `/api/chat` | 真实 Agent 对话 |
+| POST | `/api/transcribe` | 音频转文字 |
+| POST/GET | `/api/onboarding/applications` | 客户开通流程 |
 
-## 隐私与功能边界
+## 安全与可靠性
 
-- `.env`、数据库、模型、虚拟环境和日志不提交；运营列表默认手机号脱敏。
-- Demo 数据仅保存在本机 SQLite；正式系统需增加权限、加密、保留期限、删除流程和审计。
-- 已实现：配置驱动、开通演示、文本/可选语音、Agent 工具、创建/查询/改期/取消、并发和幂等。
-- 未实现：真实电话线路、短信、支付、CRM/POS、多租户、企业认证、生产监控与人工坐席。这些不影响当前考核闭环，上线前必须建设。
+- API Key 只从环境变量读取，状态接口、日志和响应从不返回密钥。
+- 日志自动遮蔽手机号与 Authorization/API Key 字段。
+- HTTP 响应隐藏堆栈和内部异常，只返回可行动的安全错误。
+- LLM 不提供门店事实；服务、价格、营业时间和时段均来自配置或数据库工具。
+- 业务写入由状态机确认门槛、Service 校验、幂等记录和数据库唯一约束共同保护。
+- CI 清空模型/STT 凭据，只运行可重复的离线测试。
+
+## 已知限制
+
+- 目前使用进程内 LangGraph 会话状态；多实例部署应迁移到 Redis/PostgreSQL checkpointer。
+- SQLite 适合考核和单机演示；高并发生产环境应迁移到 PostgreSQL，并使用事务锁或版本号。
+- SenseVoice 依赖较大，默认 Docker 镜像不包含本地模型运行时。
+- 当前 HTTP 层使用 Python 标准库，生产环境可迁移到 FastAPI/ASGI 以获得 schema、认证和监控生态。
+
+面试讲解顺序与高频追问见 [docs/INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md)。

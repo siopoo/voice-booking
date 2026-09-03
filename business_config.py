@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT / "config" / "business.json"
 

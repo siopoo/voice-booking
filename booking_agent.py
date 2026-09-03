@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -17,7 +18,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 import server
 from app.agents.prompts import build_system_prompt
 from app.agents.workflow import build_booking_workflow, evaluate_booking_flow
+from app.core.logging import log_event
 from business_config import format_business_hours
+
+logger = logging.getLogger("pawpilot.agent")
 
 
 def _json(data: Any) -> str:
@@ -353,6 +357,16 @@ def run_agent_turn(agent, session_id: str, user_text: str, clock=time.perf_count
         )
         _workflow_states[session_id] = workflow
     latency_ms = round((clock() - started_at) * 1000)
+    for item in tool_calls:
+        log_event(
+            logger,
+            "agent_tool",
+            thread_id=session_id,
+            tool=item["name"],
+            duration_ms=latency_ms,
+            stage=workflow.get("stage"),
+            booking_code=(workflow.get("booking_result") or {}).get("booking_code"),
+        )
     return {
         "reply": _message_text(reply_message),
         "tool_calls": tool_calls,

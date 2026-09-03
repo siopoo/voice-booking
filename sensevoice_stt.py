@@ -5,7 +5,6 @@ import os
 import threading
 from functools import lru_cache
 
-
 _inference_lock = threading.Lock()
 _runtime_lock = threading.Lock()
 _runtime = {"state": "not_loaded", "ready": False, "error": None, "model": None, "device": None}
